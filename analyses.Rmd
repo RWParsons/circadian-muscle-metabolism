@@ -1,0 +1,425 @@
+---
+title: "circadian-muscle-metabolism"
+author: "RP"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(circacompare)
+library(tidyverse)
+```
+
+# Clean and cbind the unnormalized csv files (healthy and old) so that it can be used by function below
+```{r}
+rm(list = ls())
+
+df_old <- read.csv("input/Old impaired_metabolomics_unnormalized_final.csv") %>%
+  select(-matches("X.[0-9]"))
+
+data.frame(cols = names(df_old)) %>%
+  filter(str_detect(cols, "DNR2.03.8.30"))
+
+
+
+
+df_young <- read.csv("input/Young healthy_metabolomics_unnormalized_final.csv") %>%
+  rename(DNR1.03.23.30 = DNR1.0323.30)
+
+
+fx_clean_cols <- function(data, young = T) {
+  df_names <-
+    data.frame(names_orig = names(data)) %>%
+    mutate(
+      id = str_extract(names_orig, "DNR[1,2].[0-9]*"),
+      id = str_remove(id, "DNR[1,2]."),
+      time = str_extract(names_orig, "[0-9]*.[0-9]*$"),
+      time = case_when(
+        time == "8.30" ~ "T1",
+        time == "13.30" ~ "T6",
+        time == "18.30" ~ "T11",
+        time == "23.30" ~ "T16",
+        time == "4.30" ~ "T21"
+      )
+    )
+
+  if (young) {
+    df_names <-
+      df_names %>%
+      mutate(names_new = ifelse(names_orig == "X", names_orig, paste0("DNR", id, ".H.", time)))
+  } else {
+    df_names <-
+      df_names %>%
+      mutate(names_new = ifelse(names_orig == "X", names_orig, paste0("DNR", id, ".P.", time)))
+  }
+
+  names(data) <- df_names$names_new
+  data$X <- str_replace_all(data$X, "/", "-to-")
+  return(data)
+}
+
+
+df_young <- fx_clean_cols(data = df_young, young = T)
+df_old <- fx_clean_cols(data = df_old, young = F)
+df_old[115, ]
+```
+
+
+
+## Clean data
+```{r}
+
+df <- inner_join(df_young, df_old, by = "X") # unnormalized data
+
+# df <- read.csv("input/DNR_Circacompare_all metabolites and clock genes.csv")  # normalized data
+names(df)[1] <- "X1"
+metabolites <- df$X1
+df <-
+  df[, -1] %>%
+  t() %>%
+  as.data.frame()
+
+names(df) <- metabolites
+
+df2 <-
+  df %>%
+  add_column(sample = rownames(df), .before = T) %>%
+  mutate(
+    id = str_remove(sample, "\\..*"),
+    group = str_extract(sample, "[H,P]"),
+    time_point = str_extract(sample, "T[0-9]*$"),
+    time_hours =
+      case_when(
+        time_point == "T1" ~ 8,
+        time_point == "T6" ~ 13,
+        time_point == "T11" ~ 18,
+        time_point == "T16" ~ 23,
+        time_point == "T21" ~ 28
+      ),
+    id_group = paste0(id, group)
+  ) %>%
+  select(sample, id, group, id_group, time_point, time_hours, everything())
+
+
+df2$id_group <- as.numeric(as.factor(df2$id_group))
+row.names(df2) <- NULL
+
+df2 %>%
+  filter(group == "P") %>%
+  group_by(time_point) %>%
+  summarize(n = n())
+```
+
+## test space for graphics
+```{r, fig.width=10, fig.height=7}
+source("src/circacompare_mixed-new.R")
+fig.width <- 12
+fig.height <- 10
+col_young <- "blue"
+col_old <- "red"
+lab_young <- "Young healthy"
+lab_old <- "Metabolically compromised"
+
+geom_label_size <- 5
+geom_label_nudge_x <- -5.2
+geom_label_nudge_y <- 0
+geom_label_hjust <- 0
+geom_label_vjust <- 1
+
+rectangle2 <- annotate("rect",
+  xmin = 4.1, xmax = 5.5,
+  ymin = -Inf, ymax = Inf, alpha = .5, colour = "grey75", fill = "grey75"
+)
+
+rectangle2 <- annotate("rect",
+  xmin = 23.5, xmax = 31,
+  ymin = -Inf, ymax = Inf, alpha = .5, colour = "grey75", fill = "grey75"
+)
+
+rectangle1 <- annotate("rect", colour = "black")
+
+frieder_theme <- list(
+  theme_bw(),
+  scale_color_manual(
+    labels = c(lab_young, lab_old),
+    values = c(col_young, col_old)
+  ),
+  scale_fill_manual(
+    labels = c(lab_young, lab_old),
+    values = c(col_young, col_old)
+  ),
+  labs(y = "Abundance level", x = "Time of day"),
+  theme(
+    plot.title = element_text(size = 27 * 1.3, face = "bold", hjust = 0.5), # size of metabolite name
+    axis.title = element_text(size = 23 * 1.3, face = "bold"), # these are the labels to the axes (abundance and  time)
+    axis.text = element_text(size = 23 * 1.3, colour = "black"), # these are the axis tick labels (numbers)
+    legend.text = element_text(size = 12),
+    legend.position = "none",
+    panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.border = element_blank(),
+    axis.line = element_line(colour = "black", size = 1 * 1.3),
+    axis.ticks = element_line(colour = "black", size = 1 * 1.3),
+    axis.ticks.length = unit(.25 * 1.3, "cm")
+  ),
+  scale_x_continuous(labels = c("8:00", "13:00", "18:00", "23:00", "4:00", "9:00", "14:00"), breaks = seq(8, 38, 5), limits = c(3, 40), expand = c(0, 0))
+)
+
+circacompare_mixed2(
+  x = df2, col_time = "time_hours", col_group = "group", col_outcome = "2-aminoisobutyric acid",
+  col_id = "id_group", randomeffects = c("k"), alpha_threshold = 1, label_size = 6 * 1.3,
+  label_nudge_x = -5.2, label_hjust = 0, label_vjust = 1, rect = rectangle2
+)$plot +
+  frieder_theme +
+  labs(title = "2-aminoisobutyric acid")
+
+
+df2 %>%
+  select(group, time_hours, `2-aminoisobutyric acid`) %>%
+  na.omit() %>%
+  group_by(group, time_hours) %>%
+  summarize(
+    mean = mean(`2-aminoisobutyric acid`),
+    sem = sd(`2-aminoisobutyric acid`) / sqrt(n()),
+    n = n()
+  ) %>%
+  ggplot(aes(time_hours, mean, col = group)) +
+  geom_point()
+
+circacompare_mixed2(
+  x = df2, col_time = "time_hours", col_group = "group", col_outcome = "Adenosine",
+  col_id = "id_group", randomeffects = c("k"), alpha_threshold = 1, label_size = 6 * 1.3,
+  label_nudge_x = -5.2, label_hjust = 0, label_vjust = 1, rect = rectangle2
+)$plot +
+  frieder_theme +
+  labs(title = "Adenosine")
+```
+
+
+
+```{r}
+out_dir <- "output_20220711"
+
+for (i in 38:length(metabolites)) {
+  print(i)
+  obj <- circacompare_mixed2(
+    x = df2, col_time = "time_hours", col_group = "group", col_outcome = metabolites[i],
+    col_id = "id_group", randomeffects = c("k"), alpha_threshold = 1,
+    dotted_line_threshold = 0.05,
+    label_size = geom_label_size,
+    label_hjust = geom_label_hjust,
+    label_nudge_x = geom_label_nudge_x,
+    label_nudge_y = geom_label_nudge_y,
+    label_vjust = geom_label_vjust,
+    rect = rectangle2
+  )
+  plot <- obj$plot + frieder_theme + labs(title = metabolites[i])
+  ggsave(
+    filename = file.path(out_dir, paste(metabolites[i], "jpeg", sep = ".")),
+    device = "jpeg", width = fig.width, height = fig.height
+  )
+  ggsave(
+    filename = file.path(out_dir, paste(metabolites[i], "tiff", sep = ".")),
+    device = "tiff", width = fig.width, height = fig.height
+  )
+  ggsave(
+    filename = file.path(out_dir, paste(metabolites[i], "svg", sep = ".")),
+    device = "svg", width = fig.width, height = fig.height
+  )
+
+  df_i <-
+    summary(obj$fit)$tTable %>%
+    as.data.frame() %>%
+    select(-DF, -`t-value`) %>%
+    rename(p_value = `p-value`, estimate = Value, std_error = Std.Error)
+
+  df_i$param <- row.names(df_i)
+  row.names(df_i) <- NULL
+
+  df_i <-
+    df_i %>%
+    pivot_wider(
+      names_from = "param",
+      values_from = c(estimate, std_error, p_value)
+    ) %>%
+    select(ends_with("1")) %>%
+    add_column(g2_rhythmic_p = obj$extras$g2_rhythmic_p, .before = TRUE) %>%
+    add_column(g1_rhythmic_p = obj$extras$g1_rhythmic_p, .before = TRUE) %>%
+    add_column(metabolite = metabolites[i], .before = T)
+
+  if (i == 1) {
+    df_all <- df_i
+  } else {
+    df_all <- rbind(df_all, df_i)
+  }
+}
+
+
+df_all <-
+  df_all %>%
+  mutate(both_groups_rhythmic = ifelse(g1_rhythmic_p < 0.05 & g2_rhythmic_p < 0.05, T, F))
+write.csv(df_all, file.path(out_dir, "modelling_results.csv"), row.names = FALSE)
+```
+
+# heat map
+```{r, fig.height=12}
+
+
+df_heat <-
+  df2 %>%
+  select(-sample, -id, -id_group, -time_point) %>%
+  pivot_longer(`1,3-Diphosphoglyceric acid`:Reverba, names_to = "metabolites", values_to = "expression") %>%
+  group_by(metabolites) %>%
+  mutate(expression = scale(expression)) %>%
+  ungroup() %>%
+  group_by(group, time_hours, metabolites) %>%
+  summarize(mean = mean(expression, na.rm = TRUE)) %>%
+  ungroup()
+
+
+df2 %>% filter(is.na(time_hours))
+
+df_heat %>%
+  pivot_wider(names_from = group, values_from = mean) %>%
+  mutate(difference = H - P) %>%
+  select(-H, -P) %>%
+  ggplot(aes(time_hours, metabolites, fill = difference)) +
+  geom_tile() +
+  scale_fill_gradient2()
+
+heatmap <-
+  df_heat %>%
+  ggplot(aes(time_hours, metabolites, fill = mean)) +
+  geom_tile() +
+  scale_fill_gradient2() +
+  facet_wrap(~group)
+```
+
+
+```{r}
+library(ComplexHeatmap)
+
+pathways <-
+  read.csv("input/PATHWAYS_Frieder.csv") %>%
+  rowid_to_column(var = "id") %>%
+  pivot_longer(!id, names_to = "pathway", values_to = "metabolites") %>%
+  filter(metabolites != "") %>%
+  mutate(metabolites_low = tolower(metabolites)) %>%
+  select(-id, -metabolites)
+
+
+df_heat2 <-
+  df_heat %>%
+  mutate(metabolites_low = tolower(metabolites)) %>%
+  left_join(., pathways, by = "metabolites_low") %>%
+  mutate(
+    pathway = ifelse(is.na(pathway), "Other", pathway),
+    metabolites = str_replace_all(metabolites, "_", " "),
+    pathway = str_replace_all(pathway, "\\.", " "),
+    metabolites = ifelse(metabolites == "2-Hydroxybutyric acid 3-Hydroxybutyric acid", "2- or 3-Hydroxybutyric acid", metabolites),
+    metabolites = ifelse(metabolites == "Glycerol-2P Glycerol-3P", "Glycerol-2P or -3P", metabolites),
+  ) %>%
+  filter(pathway != "Other")
+```
+
+
+
+```{r}
+
+df_heat3_h <-
+  df_heat2 %>%
+  filter(group == "H") %>%
+  select(-group) %>%
+  pivot_wider(names_from = time_hours, values_from = mean) %>%
+  select(-metabolites_low) %>%
+  column_to_rownames("metabolites") %>%
+  arrange(pathway)
+
+names(df_heat3_h)[2:6] <- c("8:00", "13:00", "18:00", "23:00", "4:00")
+
+
+df_heat3_p <-
+  df_heat2 %>%
+  filter(group == "P") %>%
+  select(-group) %>%
+  pivot_wider(names_from = time_hours, values_from = mean) %>%
+  select(-metabolites_low) %>%
+  column_to_rownames("metabolites") %>%
+  arrange(pathway)
+
+names(df_heat3_p)[2:6] <- c("8:00", "13:00", "18:00", "23:00", "4:00")
+
+
+times_size <- 16
+metabolites <- 18
+pathways <- 20
+
+mat <- df_heat3_h
+
+ha <- HeatmapAnnotation(
+  Pathways = mat$pathway, which = "row",
+  show_annotation_name = FALSE,
+  show_legend = FALSE
+)
+
+path_order <- sort(unique(mat$pathway))
+path_order <- c(path_order[!path_order == "Others"], "Others")
+
+hm_h <-
+  Heatmap(select(mat, -pathway),
+    name = "SD",
+    left_annotation = ha,
+    row_split = factor(mat$pathway, levels = path_order),
+    row_title_rot = 0,
+    row_gap = unit(2, "mm"),
+    row_order = order(mat$pathway),
+    row_names_gp = grid::gpar(fontsize = metabolites),
+    column_order = 1:5,
+    column_names_gp = grid::gpar(fontsize = times_size),
+    show_heatmap_legend = TRUE,
+    column_title = "Young healthy"
+  )
+
+
+
+mat <- df_heat3_p
+
+ha <- HeatmapAnnotation(
+  Pathways = mat$pathway, which = "row",
+  show_annotation_name = FALSE,
+  show_legend = FALSE
+)
+
+
+
+hm_p <-
+  Heatmap(select(mat, -pathway),
+    name = "SD",
+    row_split = factor(mat$pathway, levels = path_order),
+    row_title_rot = 0,
+    row_gap = unit(2, "mm"),
+    row_order = order(mat$pathway),
+    row_names_gp = grid::gpar(fontsize = metabolites),
+    row_title_gp = grid::gpar(fontsize = 3),
+    column_order = 1:5,
+    column_names_gp = grid::gpar(fontsize = times_size),
+    show_heatmap_legend = FALSE,
+    column_title = "Metabolically impaired"
+  )
+```
+
+```{r, fig.height=20, fig.width=10}
+
+multiplier <- 1.45
+a4height <- 11.75 * 2
+a4width <- 5.5
+
+svglite::svglite(
+  file = "heatmap_20220601.svg",
+  width = multiplier * a4width,
+  height = multiplier * a4height,
+)
+
+hm_h + hm_p
+
+dev.off()
+```
